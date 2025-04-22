@@ -64,40 +64,19 @@ class Model:
         )
 
         async def generator():
-            last_token_time = 0
             full_text = ""
+
+            pool = []
             async for output in vllm_generator:
-                # print(output.metrics)
                 text = output.outputs[0].text
                 delta = text[ len(full_text) :]
                 full_text = text
-
-                # Times are the same for first token
-                if output.metrics.first_token_time == output.metrics.last_token_time:
-                    last_token_time = output.metrics.last_token_time
-                    response_dict =  {
-                        "time_to_first_token" : round((output.metrics.first_token_time - output.metrics.arrival_time) * 1000, 0),
-                        "prompt_ntokens" : prompt_ntokens
-                    }
-
+                
+                if len(pool) == 28 or output.finished:
+                    yield_str = " ".join(pool)
+                    pool = []
+                    yield yield_str
                 else:
-                    # Calculate diff before over-writing generator's last_token_time
-                    inter_token_time = round((output.metrics.last_token_time - last_token_time) * 1000, 0)
-                    
-                    # Over-write (keep for next iteration)
-                    last_token_time = output.metrics.last_token_time
+                    pool.append(delta)
 
-                    if not output.finished:
-                        response_dict =  {
-                            "inter_token_duration" : inter_token_time
-                        }
-
-                    else:
-                        response_dict =  {
-                            "inter_token_duration" : inter_token_time,
-                            "time_to_last_token" : round((last_token_time - output.metrics.arrival_time) * 1000, 0)
-                        }
-
-                yield json.dumps(response_dict) + "\n"
-
-        return StreamingResponse(generator(), media_type="application/json")
+        return StreamingResponse(generator())
