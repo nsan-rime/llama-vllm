@@ -1,0 +1,27 @@
+model_name: rime-tts-arcana
+
+python_version: py311
+system_packages: []
+
+requirements:
+  - torch==2.5.1
+  - tokenizers==0.21
+  - asyncio==3.4.3
+  - transformers==4.50.0
+  - vllm==0.7.3
+  - fastapi==0.115.6
+  - uuid7==0.1.0
+
+resources:
+  accelerator: H100_40GB
+  use_gpu: true
+
+runtime:
+  predict_concurrency: 32
+
+secrets:
+  hf_orpheus_access_token_nay: null
+
+build_commands: []
+environment_variables: {}
+external_package_dirs: []
