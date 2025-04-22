@@ -4,6 +4,8 @@ python_version: py311
 system_packages: []
 
 requirements:
+  - snac==1.2.1
+  - rootutils==1.0.7
   - torch==2.5.1
   - tokenizers==0.21
   - asyncio==3.4.3
