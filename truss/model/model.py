@@ -10,6 +10,12 @@ from vllm import SamplingParams
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 
+# Find .project-root file to set location of root directory for imports
+import rootutils
+root = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False, indicator=[".project-root"])
+
+from snac_decode import create_wav_header, tokens_decoder
+
 class Model:
     def __init__(self, **kwargs) -> None:
         self._secrets = kwargs.get("secrets")
@@ -43,7 +49,7 @@ class Model:
         prompt_string = self.tokenizer.decode(modified_input_ids[0])
         return prompt_string, modified_input_ids[0].size(0)
 
-    async def predict(self, request):
+    async def generate_tokens(self, request):
 
         prompt_string, prompt_ntokens = self.build_prompt(request["text"])
 
@@ -63,20 +69,33 @@ class Model:
             idx
         )
 
-        async def generator():
-            full_text = ""
+        async for result in vllm_generator:
+            yield result.outputs[0].text
 
-            pool = []
-            async for output in vllm_generator:
-                text = output.outputs[0].text
-                delta = text[ len(full_text) :]
-                full_text = text
-                
-                if len(pool) == 28 or output.finished:
-                    yield_str = " ".join(pool)
-                    pool = []
-                    yield yield_str
-                else:
-                    pool.append(delta)
+    async def predict(self, request):
 
-        return StreamingResponse(generator())
+        async def audio_stream():
+            yield create_wav_header()
+
+            token_gen = self.generate_tokens(request)
+
+            buffer_chunks = []
+            async for audio_chunk in tokens_decoder(token_gen):
+                buffer_chunks.append(audio_chunk)
+
+                # Once we have 3 buffered, start yielding them and then stream live
+                if len(buffer_chunks) == 1:
+                    for chunk in buffer_chunks:
+                        yield chunk
+                    buffer_chunks.clear()
+                elif len(buffer_chunks) > 1:
+                    yield buffer_chunks.pop(0)  # keep buffer rolling by 1
+
+            # Yield any remaining chunks in the buffer at the end
+            for chunk in buffer_chunks:
+                yield chunk
+
+        return StreamingResponse(
+            audio_stream(),
+            media_type="audio/wav"
+        )
