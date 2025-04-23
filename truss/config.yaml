@@ -5,14 +5,17 @@ system_packages: []
 
 requirements:
   - snac==1.2.1
-  - rootutils==1.0.7
   - torch==2.5.1
   - tokenizers==0.21
   - asyncio==3.4.3
   - transformers==4.50.0
   - vllm==0.7.3
+  - soundfile==0.12.1
+  - rootutils==1.0.7
+  - boto3==1.35.96
   - fastapi==0.115.6
   - uuid7==0.1.0
+  - pydub==0.25.1
 
 resources:
   accelerator: H100_40GB
