@@ -16,6 +16,7 @@ requirements:
   - fastapi==0.115.6
   - uuid7==0.1.0
   - pydub==0.25.1
+  - pedalboard==0.9.16
 
 resources:
   accelerator: H100_40GB

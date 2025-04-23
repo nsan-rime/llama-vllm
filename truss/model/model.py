@@ -14,6 +14,7 @@ from typing import Optional
 from transformers import AutoTokenizer, AutoConfig
 from snac import SNAC
 from safetensors.torch import load_file
+from pedalboard.io import AudioFile
 
 from uuid_extensions import uuid7str
 
@@ -83,7 +84,7 @@ def convert_to_audio(multiframe, count):
     audio_np = detached_audio.numpy()
     audio_int16 = (audio_np * 32767).astype(np.int16)
     audio_bytes = audio_int16.tobytes()
-    return audio_bytes
+    return audio_bytes, audio_np[0,0]
 
 def turn_token_into_id(token_string, index):
     """Extract and convert the last custom token ID from a string."""
@@ -136,6 +137,24 @@ async def tokens_decoder(token_gen):
         if audio_samples is not None:
             yield audio_samples
 
+class BytesIOBuffer:
+    """
+    A wrapper around a BytesIO that allows a writer to write
+    and a reader to read, treating the BytesIO as a queue.
+    """
+
+    def __init__(self):
+        self.write_buf = BytesIO()
+        self.pointer = 0
+
+    def read(self, n=None):
+        old_pos = self.write_buf.tell()
+        self.write_buf.seek(self.pointer)
+        chunk = self.write_buf.read(n)
+        new_pos = self.write_buf.tell()
+        self.write_buf.seek(old_pos)
+        self.pointer = new_pos
+        return chunk
 
 class OrpheusModel:
     def __init__(self, 
@@ -273,27 +292,27 @@ class Model:
     async def predict(self, model_input):
         print("Starting predict call")
         start_predict = time.time()
-        async def start_ffmpeg_encoder():
-            cmd = [
-                "ffmpeg",
-                "-f", "s16le",
-                "-ar", "24000",
-                "-ac", "1",
-                "-i", "pipe:0",
-                "-f", "mp3",
-                "-flush_packets", "1",
-                "-b:a", "128k",
-                "pipe:1"
-            ]
+        # async def start_ffmpeg_encoder():
+        #     cmd = [
+        #         "ffmpeg",
+        #         "-f", "s16le",
+        #         "-ar", "24000",
+        #         "-ac", "1",
+        #         "-i", "pipe:0",
+        #         "-f", "mp3",
+        #         "-flush_packets", "1",
+        #         "-b:a", "128k",
+        #         "pipe:1"
+        #     ]
 
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,   
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            return proc
+        #     proc = await asyncio.create_subprocess_exec(
+        #         *cmd,   
+        #         stdin=asyncio.subprocess.PIPE,
+        #         stdout=asyncio.subprocess.PIPE,
+        #         stderr=asyncio.subprocess.DEVNULL
+        #     )
+        #     return proc
 
         respondStreaming = model_input.get("respondStreaming", True)
         if not respondStreaming:
@@ -315,8 +334,6 @@ class Model:
                 start_audio_stream = time.time()
                 print(f"Starting audio stream after {start_audio_stream - start_predict}")
 
-                ffmpeg = await start_ffmpeg_encoder()
-
                 token_gen = self.model.generate_tokens(
                     prompt=text,
                     speaker=speaker,
@@ -328,45 +345,19 @@ class Model:
                     stop_token_ids=[128258],
                 )
 
-                async def write_pcm_chunks():
-                    buffer_chunks = []
-                    async for pcm_chunk in tokens_decoder(token_gen):
-                        buffer_chunks.append(pcm_chunk)
+                buffer = BytesIOBuffer()
 
-                        # Once we have 3 buffered, start writing and stream as usual
-                        if len(buffer_chunks) == 1:
-                            for chunk in buffer_chunks:
-                                ffmpeg.stdin.write(chunk)
-                                await ffmpeg.stdin.drain()
-                            buffer_chunks.clear()
-                        elif len(buffer_chunks) > 1:
-                            ffmpeg.stdin.write(buffer_chunks.pop(0))
-                            await ffmpeg.stdin.drain()
+                with AudioFile(buffer.write_buf, mode="w", format="mp3", samplerate=24_000, num_channels=1, bit_depth=16, quality="fastest") as f:
+                    # Yield mp3 header
+                    yield b'ID3\x04\x00\x00\x00\x00\x00#TSSE\x00\x00\x00\x0f\x00\x00\x03Lavf60.16.100'
 
-                    # Write any remaining buffered chunks
-                    for chunk in buffer_chunks:
-                        ffmpeg.stdin.write(chunk)
-                        await ffmpeg.stdin.drain()
+                    async for _, audio_np in tokens_decoder(token_gen):
+                        f.write(audio_np)
+                        encoded_bytes = buffer.read()
 
-                    ffmpeg.stdin.write_eof()
-
-                async def read_mp3_output():
-                    while True:
-                        try:
-                            chunk = await asyncio.wait_for(ffmpeg.stdout.read(1024), timeout=0.3)
-                        except asyncio.TimeoutError:
-                            continue
-                        if not chunk:
-                            break
-                        yield chunk
-
-                write_task = asyncio.create_task(write_pcm_chunks())
-                async for mp3_chunk in read_mp3_output():
-                    yield mp3_chunk
-                await write_task
-
-                
-                    
+                        if len(encoded_bytes) > 0:
+                            yield encoded_bytes
+                        
             return StreamingResponse(
                 audio_stream(), 
                 media_type="audio/mpeg",
@@ -389,7 +380,7 @@ class Model:
                 )
 
                 buffer_chunks = []
-                async for audio_chunk in tokens_decoder(token_gen):
+                async for audio_chunk, _ in tokens_decoder(token_gen):
                     buffer_chunks.append(audio_chunk)
 
                     # Once we have 3 buffered, start yielding them and then stream live
